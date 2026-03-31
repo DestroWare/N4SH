@@ -41,20 +41,20 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Generate dummy keystore
-        # ИСПРАВЛЕНИЕ ANDROID: Генерируем фейковый ключ с нужными паролями для gradle
-        run: |
-          cd android/app
-          keytool -genkey -v -keystore dummy.keystore -alias fluffychat -keyalg RSA -keysize 2048 -validity 10000 -storepass fluffychat -keypass fluffychat -dname "CN=Dummy, OU=Dummy, O=Dummy, L=Dummy, S=Dummy, C=US"
+      - name: Disable Release Signing
+        # Просто вырезаем требование подписи из конфигурации gradle
+        run: sed -i 's/signingConfig signingConfigs.release//g' android/app/build.gradle
 
-      - name: Build APK
+      - name: Build Unsigned APK
+        # Компилируем чистый релиз без ключей
         run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: android-apk-unsigned
+          # Используем *.apk, так как файл теперь будет называться app-release-unsigned.apk
+          path: build/app/outputs/flutter-apk/*.apk
 
   build-web:
     if: ${{ inputs.build_web }}
@@ -111,13 +111,14 @@ jobs:
       - name: Build iOS App (No Codesign)
         run: flutter build ios --release --no-codesign
 
-      - name: Package into IPA (Preserve Symlinks)
-        # ИСПРАВЛЕНИЕ iOS: Добавлен флаг -y (--symlinks), чтобы не "сломать" SQLCipher framework
+      - name: Package into IPA (with ditto)
+        # Заменили zip на нативный архиватор ditto от Apple. 
+        # Он гарантированно не сломает структуру фреймворков и библиотек внутри .app
         run: |
           cd build/ios/iphoneos
           mkdir -p Payload
           mv Runner.app Payload/
-          zip -qry app-unsigned.ipa Payload
+          ditto -c -k --keepParent Payload app-unsigned.ipa
 
       - name: Upload Unsigned IPA
         uses: actions/upload-artifact@v4
