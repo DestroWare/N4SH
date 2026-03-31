@@ -41,29 +41,21 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Generate dummy keystore & Properties
-        # Создаем ключ и сразу несколько вариантов передачи паролей
-        # (чтобы Gradle гарантированно их прочитал и не выдал ошибку)
+      - name: Generate Exact Dummy Keystore
+        # Генерируем ключ ровно с теми паролями, которые жестко вшиты
+        # в Gradle-скрипт проекта в качестве "запасных" (fallback)
         run: |
           cd android/app
-          keytool -genkey -v -keystore dummy.keystore -alias dummyAlias -keyalg RSA -keysize 2048 -validity 10000 -storepass fluffychat -keypass fluffychat -dname "CN=Dummy, OU=Dummy, O=Dummy, L=Dummy, S=Dummy, C=US"
-          echo "storePassword=fluffychat" > key.properties
-          echo "keyPassword=fluffychat" >> key.properties
-          echo "keyAlias=dummyAlias" >> key.properties
-          echo "storeFile=dummy.keystore" >> key.properties
+          keytool -genkey -v -keystore dummy.keystore -alias dummyAlias -keyalg RSA -keysize 2048 -validity 10000 -storepass dummyPassword -keypass dummyPassword -dname "CN=Dummy, OU=Dummy, O=Dummy, L=Dummy, S=Dummy, C=US"
 
       - name: Build Release APK
-        env:
-          # Передаем пароли напрямую в окружение сборки
-          KEYSTORE_PASSWORD: fluffychat
-          KEY_ALIAS: dummyAlias
-          KEY_PASSWORD: fluffychat
+        # Теперь Gradle спокойно откроет ключ и подпишет APK
         run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk-unsigned
+          name: android-apk
           path: build/app/outputs/flutter-apk/*.apk
 
   build-web:
@@ -118,27 +110,21 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build iOS App (No Codesign)
-        run: flutter build ios --release --no-codesign
+      - name: Build iOS App (Archive Mode)
+        # Собираем ipa вместо ios. Это создаст полноценный .xcarchive
+        # в котором гарантированно внедрены все динамические framework'и (включая SQLCipher)
+        run: flutter build ipa --release --no-codesign
 
-      - name: Ad-Hoc Sign Frameworks (Fix SQLCipher)
-        # Принудительно генерируем локальную структуру подписи (Ad-Hoc) для библиотек.
-        # Это не привязывает приложение к аккаунту Apple, но позволяет
-        # загрузчику iOS корректно обработать SQLCipher после установки.
+      - name: Package into Unsigned IPA
+        # Заходим в сгенерированный архив, создаем стандартную структуру и пакуем в .ipa
         run: |
-          cd build/ios/iphoneos
-          find Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - --timestamp=none {} +
-          codesign --force --sign - --timestamp=none Runner.app
-
-      - name: Package into IPA (with ditto)
-        run: |
-          cd build/ios/iphoneos
+          cd build/ios/archive/Runner.xcarchive/Products/Applications
           mkdir -p Payload
           mv Runner.app Payload/
-          ditto -c -k --keepParent Payload app-unsigned.ipa
+          zip -qry ${{ github.workspace }}/app-unsigned.ipa Payload
 
       - name: Upload Unsigned IPA
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa-unsigned
-          path: build/ios/iphoneos/app-unsigned.ipa
+          path: ${{ github.workspace }}/app-unsigned.ipa
