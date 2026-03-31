@@ -41,19 +41,29 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Disable Release Signing
-        # Просто вырезаем требование подписи из конфигурации gradle
-        run: sed -i 's/signingConfig signingConfigs.release//g' android/app/build.gradle
+      - name: Generate dummy keystore & Properties
+        # Создаем ключ и сразу несколько вариантов передачи паролей
+        # (чтобы Gradle гарантированно их прочитал и не выдал ошибку)
+        run: |
+          cd android/app
+          keytool -genkey -v -keystore dummy.keystore -alias dummyAlias -keyalg RSA -keysize 2048 -validity 10000 -storepass fluffychat -keypass fluffychat -dname "CN=Dummy, OU=Dummy, O=Dummy, L=Dummy, S=Dummy, C=US"
+          echo "storePassword=fluffychat" > key.properties
+          echo "keyPassword=fluffychat" >> key.properties
+          echo "keyAlias=dummyAlias" >> key.properties
+          echo "storeFile=dummy.keystore" >> key.properties
 
-      - name: Build Unsigned APK
-        # Компилируем чистый релиз без ключей
+      - name: Build Release APK
+        env:
+          # Передаем пароли напрямую в окружение сборки
+          KEYSTORE_PASSWORD: fluffychat
+          KEY_ALIAS: dummyAlias
+          KEY_PASSWORD: fluffychat
         run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: android-apk-unsigned
-          # Используем *.apk, так как файл теперь будет называться app-release-unsigned.apk
           path: build/app/outputs/flutter-apk/*.apk
 
   build-web:
@@ -111,9 +121,16 @@ jobs:
       - name: Build iOS App (No Codesign)
         run: flutter build ios --release --no-codesign
 
+      - name: Ad-Hoc Sign Frameworks (Fix SQLCipher)
+        # Принудительно генерируем локальную структуру подписи (Ad-Hoc) для библиотек.
+        # Это не привязывает приложение к аккаунту Apple, но позволяет
+        # загрузчику iOS корректно обработать SQLCipher после установки.
+        run: |
+          cd build/ios/iphoneos
+          find Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - --timestamp=none {} +
+          codesign --force --sign - --timestamp=none Runner.app
+
       - name: Package into IPA (with ditto)
-        # Заменили zip на нативный архиватор ditto от Apple. 
-        # Он гарантированно не сломает структуру фреймворков и библиотек внутри .app
         run: |
           cd build/ios/iphoneos
           mkdir -p Payload
