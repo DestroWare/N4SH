@@ -1,7 +1,5 @@
 name: Build N4SH (Manual Select)
 
-# Оставляем ТОЛЬКО ручной запуск (workflow_dispatch)
-# и добавляем параметры (inputs) в виде чекбоксов.
 on:
   workflow_dispatch:
     inputs:
@@ -18,11 +16,8 @@ on:
         type: boolean
         default: false
 
-# Каждая архитектура вынесена в отдельный Job.
-# Они будут выполняться абсолютно параллельно в разных раннерах.
 jobs:
   build-android:
-    # Запускать этот блок только если стояла галочка на Android
     if: ${{ inputs.build_apk }}
     name: Build Android APK
     runs-on: ubuntu-latest
@@ -46,6 +41,12 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Generate dummy keystore
+        # ИСПРАВЛЕНИЕ ANDROID: Генерируем фейковый ключ с нужными паролями для gradle
+        run: |
+          cd android/app
+          keytool -genkey -v -keystore dummy.keystore -alias fluffychat -keyalg RSA -keysize 2048 -validity 10000 -storepass fluffychat -keypass fluffychat -dname "CN=Dummy, OU=Dummy, O=Dummy, L=Dummy, S=Dummy, C=US"
+
       - name: Build APK
         run: flutter build apk --release
 
@@ -54,7 +55,6 @@ jobs:
         with:
           name: android-apk
           path: build/app/outputs/flutter-apk/app-release.apk
-
 
   build-web:
     if: ${{ inputs.build_web }}
@@ -71,14 +71,12 @@ jobs:
       - name: Setup Rust for Web
         run: |
           rustup update stable
-          # Для криптографии в вебе требуется WASM
           rustup target add wasm32-unknown-unknown
 
       - name: Install dependencies
         run: flutter pub get
 
       - name: Prepare Web
-        # Выполняем скрипт, если он существует в проекте
         run: bash ./scripts/prepare-web.sh || echo "Script not found, skipping"
 
       - name: Build Web
@@ -90,11 +88,9 @@ jobs:
           name: web-build
           path: build/web
 
-
   build-ios:
     if: ${{ inputs.build_ipa }}
     name: Build iOS (Unsigned)
-    # iOS можно собрать ТОЛЬКО на macOS раннере
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,25 +103,21 @@ jobs:
       - name: Setup Rust for iOS
         run: |
           rustup update stable
-          # Добавляем таргеты Rust для iOS
           rustup target add aarch64-apple-ios x86_64-apple-ios
 
       - name: Install dependencies
         run: flutter pub get
 
       - name: Build iOS App (No Codesign)
-        # Флаг --no-codesign отключает требование профиля разработчика в Xcode.
-        # На выходе получаем файл Runner.app вместо готового IPA.
         run: flutter build ios --release --no-codesign
 
-      - name: Package into IPA
-        # Для sideloading программы требуют формат .ipa.
-        # .ipa — это просто zip-архив с папкой Payload, внутри которой лежит .app
+      - name: Package into IPA (Preserve Symlinks)
+        # ИСПРАВЛЕНИЕ iOS: Добавлен флаг -y (--symlinks), чтобы не "сломать" SQLCipher framework
         run: |
           cd build/ios/iphoneos
           mkdir -p Payload
           mv Runner.app Payload/
-          zip -qr app-unsigned.ipa Payload
+          zip -qry app-unsigned.ipa Payload
 
       - name: Upload Unsigned IPA
         uses: actions/upload-artifact@v4
