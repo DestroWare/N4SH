@@ -1,0 +1,134 @@
+name: Build N4SH (Manual Select)
+
+# Оставляем ТОЛЬКО ручной запуск (workflow_dispatch)
+# и добавляем параметры (inputs) в виде чекбоксов.
+on:
+  workflow_dispatch:
+    inputs:
+      build_apk:
+        description: 'Скомпилировать Android (APK)'
+        type: boolean
+        default: true
+      build_ipa:
+        description: 'Скомпилировать iOS (Unsigned IPA для sideloading)'
+        type: boolean
+        default: false
+      build_web:
+        description: 'Скомпилировать Web-версию'
+        type: boolean
+        default: false
+
+# Каждая архитектура вынесена в отдельный Job.
+# Они будут выполняться абсолютно параллельно в разных раннерах.
+jobs:
+  build-android:
+    # Запускать этот блок только если стояла галочка на Android
+    if: ${{ inputs.build_apk }}
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Setup Rust
+        run: rustup update stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+
+  build-web:
+    if: ${{ inputs.build_web }}
+    name: Build Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Setup Rust for Web
+        run: |
+          rustup update stable
+          # Для криптографии в вебе требуется WASM
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Prepare Web
+        # Выполняем скрипт, если он существует в проекте
+        run: bash ./scripts/prepare-web.sh || echo "Script not found, skipping"
+
+      - name: Build Web
+        run: flutter build web --release
+
+      - name: Upload Web
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: build/web
+
+
+  build-ios:
+    if: ${{ inputs.build_ipa }}
+    name: Build iOS (Unsigned)
+    # iOS можно собрать ТОЛЬКО на macOS раннере
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Setup Rust for iOS
+        run: |
+          rustup update stable
+          # Добавляем таргеты Rust для iOS
+          rustup target add aarch64-apple-ios x86_64-apple-ios
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build iOS App (No Codesign)
+        # Флаг --no-codesign отключает требование профиля разработчика в Xcode.
+        # На выходе получаем файл Runner.app вместо готового IPA.
+        run: flutter build ios --release --no-codesign
+
+      - name: Package into IPA
+        # Для sideloading программы требуют формат .ipa.
+        # .ipa — это просто zip-архив с папкой Payload, внутри которой лежит .app
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          mv Runner.app Payload/
+          zip -qr app-unsigned.ipa Payload
+
+      - name: Upload Unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa-unsigned
+          path: build/ios/iphoneos/app-unsigned.ipa
