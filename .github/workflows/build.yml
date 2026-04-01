@@ -41,15 +41,19 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Generate Exact Dummy Keystore
-        # Генерируем ключ ровно с теми паролями, которые жестко вшиты
-        # в Gradle-скрипт проекта в качестве "запасных" (fallback)
+      - name: Configure Correct Android Keystore
+        # ИСПРАВЛЕНИЕ: key.properties теперь лежит строго в android/
+        # а сам сгенерированный ключ - в android/app/
         run: |
-          cd android/app
-          keytool -genkey -v -keystore dummy.keystore -alias dummyAlias -keyalg RSA -keysize 2048 -validity 10000 -storepass dummyPassword -keypass dummyPassword -dname "CN=Dummy, OU=Dummy, O=Dummy, L=Dummy, S=Dummy, C=US"
+          cd android
+          keytool -genkey -v -keystore app/release.keystore -alias n4sh_alias -keyalg RSA -keysize 2048 -validity 10000 -storepass fluffypass -keypass fluffypass -dname "CN=N4SH, OU=N4SH, O=N4SH, L=N4SH, S=N4SH, C=US"
+          echo "storePassword=fluffypass" > key.properties
+          echo "keyPassword=fluffypass" >> key.properties
+          echo "keyAlias=n4sh_alias" >> key.properties
+          echo "storeFile=release.keystore" >> key.properties
 
       - name: Build Release APK
-        # Теперь Gradle спокойно откроет ключ и подпишет APK
+        # Теперь Gradle найдет key.properties и использует наш ключ!
         run: flutter build apk --release
 
       - name: Upload APK
@@ -110,21 +114,26 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build iOS App (Archive Mode)
-        # Собираем ipa вместо ios. Это создаст полноценный .xcarchive
-        # в котором гарантированно внедрены все динамические framework'и (включая SQLCipher)
-        run: flutter build ipa --release --no-codesign
+      - name: Build iOS App (No Codesign)
+        run: flutter build ios --release --no-codesign
 
-      - name: Package into Unsigned IPA
-        # Заходим в сгенерированный архив, создаем стандартную структуру и пакуем в .ipa
+      - name: Ad-Hoc Sign Frameworks (Fix SQLCipher)
+        # ИСПРАВЛЕНИЕ: Мы принудительно даем всем динамическим фреймворкам псевдо-подпись.
+        # Это успокоит загрузчик dyld внутри iOS, и он разрешит запуск SQLCipher.
         run: |
-          cd build/ios/archive/Runner.xcarchive/Products/Applications
+          cd build/ios/iphoneos
+          find Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - --timestamp=none {} +
+          codesign --force --sign - --timestamp=none Runner.app
+
+      - name: Package into IPA (with ditto)
+        run: |
+          cd build/ios/iphoneos
           mkdir -p Payload
           mv Runner.app Payload/
-          zip -qry ${{ github.workspace }}/app-unsigned.ipa Payload
+          ditto -c -k --keepParent Payload ${{ github.workspace }}/app-unsigned.ipa
 
       - name: Upload Unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ipa-unsigned
+          name: ios-ipa
           path: ${{ github.workspace }}/app-unsigned.ipa
